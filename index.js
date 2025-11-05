@@ -1,112 +1,115 @@
 const { spawn } = require("child_process");
 const axios = require("axios");
 const logger = require("./utils/log");
+const express = require("express");
+const path = require("path");
 
-///////////////////////////////////////////////////////////
-//========= Create website for dashboard/uptime =========//
-///////////////////////////////////////////////////////////
-
-const express = require('express');
-const path = require('path');
+//========================================================//
+//============== WEB DASHBOARD + KEEP ALIVE ==============//
+//========================================================//
 
 const app = express();
 const port = process.env.PORT || 10000;
 
-// Serve the index.html file
-app.get('/', function (req, res) {
-    res.sendFile(path.join(__dirname, '/index.html'));
+// Serve static index.html (dashboard)
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "/index.html"));
 });
 
-// Start the server and add error handling
-app.listen(port, () => {
-    logger(`Server is running on port ${port}...`, "[ Starting ]");
-}).on('error', (err) => {
-    if (err.code === 'EACCES') {
-        logger(`Permission denied. Cannot bind to port ${port}.`, "[ Error ]");
-    } else {
-        logger(`Server error: ${err.message}`, "[ Error ]");
-    }
+// Health check route (Render ping)
+app.get("/ping", (req, res) => {
+  res.send("pong");
 });
 
-/////////////////////////////////////////////////////////
-//========= Create start bot and make it loop =========//
-/////////////////////////////////////////////////////////
+// Start the web server
+app.listen(port, "0.0.0.0", () => {
+  logger(`✅ Server running on port ${port}`, "[ WEB SERVICE ]");
+}).on("error", (err) => {
+  if (err.code === "EACCES") {
+    logger(`Permission denied. Cannot bind to port ${port}.`, "[ ERROR ]");
+  } else {
+    logger(`Server error: ${err.message}`, "[ ERROR ]");
+  }
+});
 
-// Initialize global restart counter
+//========================================================//
+//============== BOT STARTER + AUTO RESTART ===============//
+//========================================================//
+
 global.countRestart = global.countRestart || 0;
 
 function startBot(message) {
-    if (message) logger(message, "[ Starting ]");
+  if (message) logger(message, "[ STARTING ]");
 
-    const child = spawn("node", ["--trace-warnings", "--async-stack-traces", "Priyansh.js"], {
-        cwd: __dirname,
-        stdio: "inherit",
-        shell: true
+  const child = spawn("node", ["--trace-warnings", "--async-stack-traces", "Priyansh.js"], {
+    cwd: __dirname,
+    stdio: "inherit",
+    shell: true,
+  });
+
+  // Error Handling
+  child.on("error", (error) => {
+    logger(`Bot process error: ${error.stack || error.message}`, "[ ERROR ]");
+  });
+
+  // Standard output and error streams
+  if (child.stdout) {
+    child.stdout.on("data", (data) => {
+      console.log(`[BOT STDOUT]: ${data}`);
     });
+  }
 
-    // Add more detailed error logging
-    child.on("error", (error) => {
-        logger(`Bot process error: ${error.stack || error.message}`, "[ Error ]");
+  if (child.stderr) {
+    child.stderr.on("data", (data) => {
+      console.error(`[BOT STDERR]: ${data}`);
     });
+  }
 
-    // Add stdout and stderr handling for better debugging
-    if (child.stdout) {
-        child.stdout.on('data', (data) => {
-            console.log(`stdout: ${data}`);
-        });
+  // Restart logic
+  child.on("close", (codeExit) => {
+    if (codeExit !== 0) {
+      logger(`Bot exited with code ${codeExit}`, "[ EXIT ]");
+
+      if (global.countRestart < 5) {
+        global.countRestart += 1;
+        logger(`Restarting bot... (${global.countRestart}/5)`, "[ RESTARTING ]");
+        setTimeout(() => startBot(), 2000);
+      } else {
+        logger(`Bot stopped after ${global.countRestart} restarts.`, "[ STOPPED ]");
+        logger("To debug, run 'node Priyansh.js' manually.", "[ DEBUG ]");
+      }
+    } else {
+      logger("Bot exited normally with code 0.", "[ EXIT ]");
     }
-
-    if (child.stderr) {
-        child.stderr.on('data', (data) => {
-            console.error(`stderr: ${data}`);
-        });
-    }
-
-    child.on("close", (codeExit) => {
-        if (codeExit !== 0) {
-            logger(`Bot exited with code ${codeExit}`, "[ Exit ]");
-            
-            if (global.countRestart < 5) {
-                global.countRestart += 1;
-                logger(`Restarting... (${global.countRestart}/5)`, "[ Restarting ]");
-                startBot();
-            } else {
-                logger(`Bot stopped after ${global.countRestart} restarts.`, "[ Stopped ]");
-                logger("To see detailed errors, check the logs above or run the bot with 'node Priyansh.js' directly", "[ Debug ]");
-            }
-        } else {
-            logger("Bot process exited with code 0 (normal exit)", "[ Exit ]");
-        }
-    });
-};
-
-////////////////////////////////////////////////
-//========= Check update from Github =========//
-////////////////////////////////////////////////
-
-// Load package.json info locally instead of from GitHub
-try {
-    const packageInfo = require('./package.json');
-    logger(packageInfo.name, "[ NAME ]");
-    logger(`Version: ${packageInfo.version}`, "[ VERSION ]");
-    logger(packageInfo.description, "[ DESCRIPTION ]");
-    
-    // Try to check for updates, but don't stop the bot if it fails
-    axios.get("https://raw.githubusercontent.com/codedbypriyansh/Priyansh-Bot/main/package.json")
-        .then((res) => {
-            // Only log if successful, don't stop the bot if there's an error
-            if (res.data && res.data.version) {
-                logger(`Remote version: ${res.data.version}`, "[ UPDATE INFO ]");
-            }
-        })
-        .catch((err) => {
-            // Just log the error but continue with bot startup
-            logger(`Update check failed: ${err.message}`, "[ Update Error ]");
-        });
-} catch (err) {
-    // If local package.json can't be read, just log and continue
-    logger(`Failed to load package info: ${err.message}`, "[ Error ]");
+  });
 }
 
-// Start the bot
-startBot();
+//========================================================//
+//============== UPDATE CHECK FROM GITHUB =================//
+//========================================================//
+
+try {
+  const packageInfo = require("./package.json");
+  logger(packageInfo.name, "[ NAME ]");
+  logger(`Version: ${packageInfo.version}`, "[ VERSION ]");
+  logger(packageInfo.description, "[ DESCRIPTION ]");
+
+  axios
+    .get("https://raw.githubusercontent.com/codedbypriyansh/Priyansh-Bot/main/package.json")
+    .then((res) => {
+      if (res.data && res.data.version) {
+        logger(`Remote version: ${res.data.version}`, "[ UPDATE INFO ]");
+      }
+    })
+    .catch((err) => {
+      logger(`Update check failed: ${err.message}`, "[ UPDATE ERROR ]");
+    });
+} catch (err) {
+  logger(`Failed to load package info: ${err.message}`, "[ ERROR ]");
+}
+
+//========================================================//
+//==================== START BOT ==========================//
+//========================================================//
+
+startBot("🚀 Starting bot...");
